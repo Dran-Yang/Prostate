@@ -10,6 +10,7 @@ from functools import partial
 import torch
 from torch import nn
 
+import dinov2.distributed as distributed
 from dinov2.fsdp import (
     ShardedGradScaler,
     get_fsdp_modules,
@@ -592,6 +593,9 @@ class SSLMetaArch(nn.Module):
         return all_params_groups
 
     def prepare_for_distributed_training(self):
+        if distributed.get_global_size() <= 1:
+            logger.info("Single GPU detected: skip FSDP wrapping.")
+            return
         logger.info("DISTRIBUTED FSDP -- preparing model for distributed training")
         if has_batchnorms(self.student):
             raise NotImplementedError
