@@ -13,6 +13,13 @@ from dinov2.models.vision_transformer import (
 
 
 class GliomaDinoViT(DinoVisionTransformer):
+    """Vision Transformer variant that supports configurable MRI modalities.
+
+    The model embeds per-sequence tokens so it can work with any number of
+    modalities provided through ``mri_sequences`` (for example, the three
+    prostate sequences). When no list is provided, it falls back to the default
+    glioma set.
+    """
 
     # embedding to indicate the MRI sequence for each token (patch)
     mri_sequences_default = ["t1", "t1c", "t2", "flair"]
