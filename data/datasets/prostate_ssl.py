@@ -151,13 +151,23 @@ class ProstateSSL(MedicalVisionDataset):
         subject_dir = Path(self._split_dir) / self.images[index]
         subject_dict = self.img_load_transform(subject_dir)
 
-        image = torch.stack([subject_dict[key] for key in self.mri_sequences], dim=0)
+        modality_tensors: list[torch.Tensor] = []
+        for key in self.mri_sequences:
+            modality = subject_dict[key]
+            if modality.dim() == 3 and modality.size(0) == 1:
+                modality = modality.squeeze(0)
+            modality_tensors.append(modality)
+
+        image = torch.stack(modality_tensors, dim=0)
 
         if image.size(0) == 1:
             image = image.repeat(3, 1, 1)
 
         if self.append_label_mask:
-            image = torch.cat([image, subject_dict["seg"].unsqueeze(0)], dim=0)
+            label_mask = subject_dict["seg"]
+            if label_mask.dim() == 3 and label_mask.size(0) == 1:
+                label_mask = label_mask.squeeze(0)
+            image = torch.cat([image, label_mask.unsqueeze(0)], dim=0)
 
         return image
 
