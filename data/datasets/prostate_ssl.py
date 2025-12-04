@@ -47,7 +47,7 @@ class ProstateSSL(MedicalVisionDataset):
     def __init__(
         self,
         *,
-        split: str,
+        split: str | _Split,
         root: str,
         mri_sequences: str | Sequence[str] | None = None,
         split_csv: Optional[str] = None,
@@ -59,6 +59,15 @@ class ProstateSSL(MedicalVisionDataset):
         append_label_mask: bool = False,
         spatial_size: Optional[Sequence[int] | int | float] = None,
     ) -> None:
+        if isinstance(split, self.Split):
+            split_enum = split
+        else:
+            try:
+                split_enum = self.Split(str(split).lower())
+            except ValueError as exc:
+                valid = ", ".join(member.value for member in self.Split)
+                raise ValueError(f"Unsupported split '{split}'; expected one of: {valid}") from exc
+
         if mri_sequences is not None and isinstance(mri_sequences, str):
             self.mri_sequences = mri_sequences.split(",")
         else:
@@ -78,7 +87,7 @@ class ProstateSSL(MedicalVisionDataset):
             else:
                 self.spatial_size = tuple(int(x) for x in spatial_size)
 
-        super().__init__(split, root, transforms, transform, target_transform)
+        super().__init__(split_enum, root, transforms, transform, target_transform)
 
         self.class_names: Sequence[str] = []
 
@@ -151,13 +160,23 @@ class ProstateSSL(MedicalVisionDataset):
         subject_dir = Path(self._split_dir) / self.images[index]
         subject_dict = self.img_load_transform(subject_dir)
 
-        image = torch.stack([subject_dict[key] for key in self.mri_sequences], dim=0)
+        modality_tensors: list[torch.Tensor] = []
+        for key in self.mri_sequences:
+            modality = subject_dict[key]
+            if modality.dim() == 3 and modality.size(0) == 1:
+                modality = modality.squeeze(0)
+            modality_tensors.append(modality)
+
+        image = torch.stack(modality_tensors, dim=0)
 
         if image.size(0) == 1:
             image = image.repeat(3, 1, 1)
 
         if self.append_label_mask:
-            image = torch.cat([image, subject_dict["seg"].unsqueeze(0)], dim=0)
+            label_mask = subject_dict["seg"]
+            if label_mask.dim() == 3 and label_mask.size(0) == 1:
+                label_mask = label_mask.squeeze(0)
+            image = torch.cat([image, label_mask.unsqueeze(0)], dim=0)
 
         return image
 
