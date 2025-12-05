@@ -1,68 +1,100 @@
-# Prostate Multi-Modal DINOv2
+mm-dinov2 (Prostate MRI SSL fork)
+=================================
 
-This repository adapts the [DINOv2](https://arxiv.org/abs/2304.07193) vision transformer pipeline to self-supervised learning on prostate MRI. It includes utilities for preparing patient volumes, slicing tumor-centered 2D crops, and training a multi-modal ViT backbone that embeds each MRI sequence separately.
+This fork adds prostate MRI self-supervised pretraining to mm-dinov2, with a stable fp32 pipeline and single-GPU-friendly behavior. Use this README to configure and run training reproducibly.
 
-## Repository layout
-- `data/datasets/prostate_ssl.py` – self-supervised dataset for prostate MRI patients. It builds 2D slices centered on the tumor, normalizes intensities, and supports random axial/coronal/sagittal sampling during training.
-- `dinov2/data/monai_transforms/io.py` – MONAI transforms to resolve patient filepaths, pick the highest-b DWI volume, crop around the tumor center of mass, and load the corresponding slice for each modality.
-- `dinov2/utils/register_prostate.py` – helper to rigid/affine register patient volumes before training.
-- `dinov2/configs/train/prostate_vitb14_mm-dino.yaml` – training hyperparameters for the prostate setup, including multi-modal student/teacher ViT settings and crop augmentation defaults.
+Environment
+-----------
+- OS: WSL2 Ubuntu (Win11)
+- GPU: RTX 4090 (CUDA 12.x)
+- Python 3.10, PyTorch 2.x
+- xFormers installed (fp32 path runs with xFormers in fp32; set `XFORMERS_DISABLED=1` to force pure PyTorch)
 
-## Data preparation
-1. **Patient folder structure**
-   Place each subject under `<DATA_ROOT>/<PATIENT_ID>/` with (at minimum):
-   - `ax_t2wi.nii` (or `.nii.gz`)
-   - `ax_adc.nii`
-   - `ax_dwi*.nii*` (the loader will pick the highest b-value file)
-   - `roi_Prostate.nii` (segmentation mask)
+Key defaults
+------------
+- Dtype: global **float32** (no GradScaler; consistent fp32 through data, model, and xFormers).
+- Single GPU: FSDP wrapping is skipped; checkpointing uses plain state_dict.
+- Multi GPU: original FSDP behavior is preserved.
+- Scheduler: robust cosine with warmup/freeze padding (see `utils/utils.py`).
 
-2. **Optional registration**
-   Align ADC/DWI volumes to T2-weighted space with SimpleITK:
-   ```bash   python -m dinov2.utils.register_prostate \
-     --data-root <DATA_ROOT> \
-     --output-root <REGISTERED_ROOT> \
-     --ref-seq ax_t2wi \
-     --moving-seqs ax_adc ax_dwi \
-     --seg-name roi_Prostate
-   ```
-   The script mirrors patient folders into `<REGISTERED_ROOT>` and resamples masks with nearest-neighbor interpolation.
+Data layout
+-----------
+Each patient lives under `root/<patient_id>/` with:
+- `ax_t2wi.nii(.gz)`
+- `ax_adc.nii(.gz)`
+- `ax_dwi_*.nii(.gz)` (highest b-value is chosen)
+- `roi_Prostate.nii(.gz)` (optional segmentation)
 
-3. **Splits**
-   If you provide a CSV split file, include a patient identifier column such as `patient_id`, `case_id`, `id`, or `subject` (the loader uses the first matching column). Otherwise, the dataset iterates over all patient folders under `root`.
+Optional split CSV: include a column with patient ids (auto-detected from `patient_id / case_id / id / ID / subject / name`).
 
-## Training
-1. **Environment** – Install PyTorch (with CUDA if available) and common dependencies used by DINOv2/ MONAI (e.g., `torch`, `monai`, `fvcore`).
-2. **Edit the config** – Update `dinov2/configs/train/prostate_vitb14_mm-dino.yaml` so `train.dataset_path` points to your data, split CSV, and MRI sequences. The default expects three modalities (`ax_t2wi,ax_adc,ax_dwi`) and enables random slice/axis sampling during training.
-3. **Launch training** – Run the SSL trainer with your config and an output directory for checkpoints/logs:
-   ```bash
-   python -m dinov2.train.train \
-     --config-file dinov2/configs/train/prostate_vitb14_mm-dino.yaml \
-     --output-dir outputs/prostate_ssl
-   ```
-   The config uses `OFFICIAL_EPOCH_LENGTH` to approximate steps per epoch (set it to `ceil(num_patients / batch_size_per_gpu)`). Teacher/student weights can optionally warm-start from DINOv2 checkpoints via `student.pretrained_weights`.
+Dataset string (train.dataset_path)
+-----------------------------------
+Format: `ProstateSSL:split=TRAIN:root=/path:split_csv=split/train.csv:mri_sequences=ax_t2wi,ax_adc,ax_dwi:random_axes=True:random_slices=True`
 
-## Dataset details
-- **MRI sequences** – Pass a comma-separated list (e.g., `ax_t2wi,ax_adc,ax_dwi`) when building `ProstateSSL`; the loader squeezes singleton channel dimensions and stacks them into `(C, H, W)` tensors. When only one modality is present it is automatically triplicated to mimic RGB.
-- **Tumor-centered slicing** – During training, random axes and slices are sampled around the tumor center of mass (subject to `random_axes`/`random_slices` flags). Validation/test default to axial slices.
-- **Intensity scaling** – Intensities are percentile-clipped per modality (1st–99th percentiles) and mapped to `[0, 1]` before augmentations.
+Supported flags:
+- `root`: dataset root
+- `split`: TRAIN | VAL | TEST (for prostate SSL the CSV controls split)
+- `split_csv`: CSV path for split
+- `mri_sequences`: comma list (default `ax_t2wi,ax_adc,ax_dwi`)
+- `random_axes`: sample axial/coronal/sagittal in TRAIN
+- `random_slices`: random slice selection in TRAIN
+- `append_label_mask`: add segmentation mask as an extra channel
+- `percentage_labels`: fraction (0–1) of samples that keep the mask channel when available; others receive a zero mask
 
-## Reproducibility tips
-- Fix seeds in your launcher (`torch.manual_seed`, `numpy`, etc.) if you need deterministic slice selection.
-- Monitor the console log for the resolved patient count and chosen split column when supplying a CSV.
-- Verify a sample after constructing `ProstateSSL`:
-  ```python
-  ds = ProstateSSL(
-      split="train",
-      root="<DATA_ROOT>",
-      mri_sequences="ax_t2wi,ax_adc,ax_dwi",
-      split_csv="split/train.csv",
-      random_axes=True,
-      random_slices=True,
-  )
-  img, _ = ds[0]
-  print(img.shape)  # should be torch.Size([3, 224, 224])
-  ```
+All modalities and masks are resized to `spatial_size` (default 224). Images use bilinear; masks use nearest and are binarized.
 
- 
-EOF
-)
+Config to start from
+--------------------
+- `configs/train/prostate_vitb14_mm-dino.yaml`
+
+Edit for your run:
+- `train.dataset_path` (root, split_csv, sequences, random_axes/slices)
+- `train.output_dir`
+- `train.batch_size_per_gpu`, `train.num_workers`, `train.OFFICIAL_EPOCH_LENGTH`
+- `train.percentage_labels`
+- `crops.crop_from_tumor_foreground` (also controls `append_label_mask`)
+- `optim.base_lr`, `optim.epochs`, `optim.warmup_epochs`, `optim.weight_decay`
+- Model: `student.arch`, `patch_size`, `drop_path_rate`, MRI embedding flags (`use_mri_seq_embed`, `img_wise_pos_embed`)
+
+Runtime flag handling
+---------------------
+`train/train.py` appends at runtime (only once):
+- `append_label_mask=<crops.crop_from_tumor_foreground>`
+- `percentage_labels=<train.percentage_labels>`
+
+fp32 strategy is enforced in `enforce_fp32_training`; mixed_precision param/reduce/buffer dtypes are set to fp32 and GradScaler is disabled. Inputs are cast to `torch.float32`.
+
+Run training (single GPU)
+-------------------------
+```bash
+python -m train.train \
+  --config-file configs/train/prostate_vitb14_mm-dino.yaml \
+  --output-dir /out
+```
+
+Smoke test (quick sanity)
+-------------------------
+```bash
+export PROSTATE_DATA_ROOT=/path/to/small_prostate_subset   # 2–4 patients
+python tests/test_prostate_ssl_training.py
+```
+Runs 5 iterations in fp32 to catch dtype/shape/checkpoint issues.
+
+What to check before a run
+--------------------------
+- `train.dataset_path` points to the correct root/CSV; flags are not duplicated.
+- `train.output_dir` exists or is creatable.
+- `percentage_labels` matches desired mask usage.
+- GPU visible (`torch.cuda.is_available()`).
+- Optional: `XFORMERS_DISABLED=1` if debugging fused ops.
+
+Files of interest in this fork
+------------------------------
+- `data/datasets/prostate_ssl.py`: mask alignment, percentage_labels, resizing
+- `data/monai_transforms/io.py`: robust slicing, missing seg handling, nearest for masks
+- `models/__init__.py`: channel counting from dataset flags, mask channel included
+- `train/train.py`: fp32 strategy, dataset flag append, safe GliomaDinoViT unwrap
+- `utils/utils.py`: robust cosine scheduler
+- `fsdp/__init__.py`: safe checkpointing when not FSDP-wrapped
+- `layers/block.py`: dtype-safe scaled_index_add path
+- `tests/test_prostate_ssl_training.py`: smoke test
