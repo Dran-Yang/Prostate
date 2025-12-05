@@ -60,19 +60,7 @@ class ProstateSSL(MedicalVisionDataset):
         spatial_size: Optional[Sequence[int] | int | float] = None,
         percentage_labels: float = 1.0,
     ) -> None:
-<<<<<<< HEAD
         self.seg_name = "roi_Prostate"
-=======
-        if isinstance(split, self.Split):
-            split_enum = split
-        else:
-            try:
-                split_enum = self.Split(str(split).lower())
-            except ValueError as exc:
-                valid = ", ".join(member.value for member in self.Split)
-                raise ValueError(f"Unsupported split '{split}'; expected one of: {valid}") from exc
-
->>>>>>> 2703090ec2a37178f074c1ff809396257e03023f
         if mri_sequences is not None and isinstance(mri_sequences, str):
             self.mri_sequences = mri_sequences.split(",")
         else:
@@ -234,7 +222,6 @@ class ProstateSSL(MedicalVisionDataset):
         subject_dir = Path(self._split_dir) / self.images[index]
         subject_dict = self.img_load_transform(subject_dir)
 
-<<<<<<< HEAD
         image_channels = [
             self._resize_to_spatial_size(subject_dict[key], mode="bilinear")
             for key in self.mri_sequences
@@ -253,25 +240,6 @@ class ProstateSSL(MedicalVisionDataset):
             if not use_mask:
                 seg_tensor = torch.zeros_like(seg_tensor)
             image = torch.cat([image, seg_tensor.unsqueeze(0)], dim=0)
-=======
-        modality_tensors: list[torch.Tensor] = []
-        for key in self.mri_sequences:
-            modality = subject_dict[key]
-            if modality.dim() == 3 and modality.size(0) == 1:
-                modality = modality.squeeze(0)
-            modality_tensors.append(modality)
-
-        image = torch.stack(modality_tensors, dim=0)
-
-        if image.size(0) == 1:
-            image = image.repeat(3, 1, 1)
-
-        if self.append_label_mask:
-            label_mask = subject_dict["seg"]
-            if label_mask.dim() == 3 and label_mask.size(0) == 1:
-                label_mask = label_mask.squeeze(0)
-            image = torch.cat([image, label_mask.unsqueeze(0)], dim=0)
->>>>>>> 2703090ec2a37178f074c1ff809396257e03023f
 
         return image
 
