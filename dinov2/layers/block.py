@@ -153,6 +153,8 @@ def add_residual(x, brange, residual, residual_scale_factor, scaling_vector=None
             x_flat, 0, brange, residual.to(dtype=x.dtype), alpha=residual_scale_factor
         )
     else:
+        if scaling_vector.dtype != x.dtype or scaling_vector.device != x.device:
+            scaling_vector = scaling_vector.to(device=x.device, dtype=x.dtype)
         x_plus_residual = scaled_index_add(
             x,
             brange,

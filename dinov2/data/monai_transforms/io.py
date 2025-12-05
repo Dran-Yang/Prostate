@@ -84,15 +84,18 @@ def LoadTumorSliceWithAxis(
     nii_img = nib.nifti1.load(str(fp))
     if axis == 0:
         return torch.tensor(
-            nii_img.slicer[slice_idx, slice_[0], slice_[1]].get_fdata().squeeze(0)
+            nii_img.slicer[slice_idx, slice_[0], slice_[1]].get_fdata().squeeze(0),
+            dtype=torch.float32,
         )
     elif axis == 1:
         return torch.tensor(
-            nii_img.slicer[slice_[0], slice_idx, slice_[1]].get_fdata().squeeze(1)
+            nii_img.slicer[slice_[0], slice_idx, slice_[1]].get_fdata().squeeze(1),
+            dtype=torch.float32,
         )
     elif axis == 2:
         return torch.tensor(
-            nii_img.slicer[slice_[0], slice_[1], slice_idx].get_fdata().squeeze(2)
+            nii_img.slicer[slice_[0], slice_[1], slice_idx].get_fdata().squeeze(2),
+            dtype=torch.float32,
         )
 
 
@@ -106,6 +109,7 @@ class LoadTumorSliced(MapTransform):
         allow_missing_keys: bool = False,
         min_tumor_size: int = 500,
         select_random_slices: bool = False,
+        allow_missing_seg: bool = False,
     ):
         super().__init__(keys, allow_missing_keys)
 
@@ -115,6 +119,7 @@ class LoadTumorSliced(MapTransform):
 
         self.select_random_slices = select_random_slices
         self.min_tumor_size = min_tumor_size
+        self.allow_missing_seg = allow_missing_seg
 
     def __call__(self, data: KeysCollection) -> dict[str, torch.Tensor]:
         # extract and crop segmentation map
@@ -138,34 +143,97 @@ class LoadTumorSliced(MapTransform):
     def extract_tumor_slice(
         self, data: KeysCollection, axis: int
     ) -> tuple[torch.Tensor, torch.Tensor, int]:
-        tumor_label_map = nib.nifti1.load(str(data[self.tumor_key])).get_fdata()
-        # get slice with most tumor pixels
+        """
+        Returns a (slice, center_of_mass, slice_idx) tuple.
+
+        - If segmentation is present, uses it to pick the slice with most tumor voxels.
+        - If segmentation is missing or empty, falls back to a center slice of the first modality.
+        """
+        seg_fp = Path(data[self.tumor_key])
+        tumor_label_map = None
+        if seg_fp.exists():
+            tumor_label_map = nib.nifti1.load(str(seg_fp)).get_fdata()
+
+        if tumor_label_map is None or np.sum(tumor_label_map) == 0:
+            if not self.allow_missing_seg and tumor_label_map is None:
+                raise FileNotFoundError(
+                    f"Segmentation file not found at {seg_fp} and allow_missing_seg=False."
+                )
+            ref_key = next(k for k in self.key_iterator(data) if k != self.tumor_key)
+            ref_nii = nib.nifti1.load(str(data[ref_key]))
+            ref_vol = ref_nii.get_fdata()
+            slice_idx = self._select_slice_without_seg(ref_vol, axis)
+            tumor_label_map_slice = torch.zeros_like(
+                torch.tensor(
+                    self._get_slice_from_volume(ref_vol, axis, slice_idx),
+                    dtype=torch.float32,
+                )
+            )
+            com_tumor = torch.tensor(
+                [ref_vol.shape[a] / 2.0 for a in range(ref_vol.ndim) if a != axis],
+                dtype=torch.float32,
+            )
+            return tumor_label_map_slice, com_tumor, slice_idx
+
         if axis == 2:
             # axial
             slice_idx = self.get_tumor_slice_from_label_map(
                 tumor_label_map,
                 axis=(0, 1),
             )
-            tumor_label_map_slice = torch.tensor(tumor_label_map[..., slice_idx])
+            tumor_label_map_slice = torch.tensor(
+                tumor_label_map[..., slice_idx], dtype=torch.float32
+            )
         elif axis == 1:
             # coronal
             slice_idx = self.get_tumor_slice_from_label_map(
                 tumor_label_map,
                 axis=(0, 2),
             )
-            tumor_label_map_slice = torch.tensor(tumor_label_map[:, slice_idx, :])
+            tumor_label_map_slice = torch.tensor(
+                tumor_label_map[:, slice_idx, :], dtype=torch.float32
+            )
         elif axis == 0:
             # sagittal
             slice_idx = self.get_tumor_slice_from_label_map(
                 tumor_label_map,
                 axis=(1, 2),
             )
-            tumor_label_map_slice = torch.tensor(tumor_label_map[slice_idx, :, :])
+            tumor_label_map_slice = torch.tensor(
+                tumor_label_map[slice_idx, :, :], dtype=torch.float32
+            )
+        else:
+            raise ValueError(f"Unsupported axis {axis}")
 
-        # get center of mass of tumor
         com_tumor = calc_center_of_mass(tumor_label_map_slice)
+        if torch.isnan(com_tumor).any():
+            # fallback to center if the mask is empty/degenerate
+            com_tumor = torch.tensor(
+                [float(s) / 2.0 for s in tumor_label_map_slice.shape[-2:]],
+                dtype=torch.float32,
+            )
 
         return tumor_label_map_slice, com_tumor, slice_idx
+
+    def _select_slice_without_seg(self, volume: np.ndarray, axis: int) -> int:
+        """Select a slice index when no segmentation is available."""
+        axis_len = volume.shape[axis]
+        if self.select_random_slices:
+            return np.random.randint(0, axis_len)
+        return axis_len // 2
+
+    @staticmethod
+    def _get_slice_from_volume(
+        volume: np.ndarray, axis: int, slice_idx: int
+    ) -> np.ndarray:
+        """Return a single 2D slice from a 3D volume along the given axis."""
+        if axis == 2:
+            return volume[..., slice_idx]
+        if axis == 1:
+            return volume[:, slice_idx, :]
+        if axis == 0:
+            return volume[slice_idx, :, :]
+        raise ValueError(f"Unsupported axis {axis}")
 
     def get_tumor_slice_from_label_map(
         self,
@@ -202,7 +270,8 @@ def calculate_crop_slices(
     crop_end = crop_start + spatial_crop_size_torch
     if (crop_end > spatial_img_size_torch).any():
         crop_end = torch.min(crop_end, spatial_img_size_torch)
-        crop_start = crop_end - spatial_crop_size_torch
+        crop_start = torch.clamp(crop_end - spatial_crop_size_torch, min=0)
+        crop_end = torch.min(crop_start + spatial_crop_size_torch, spatial_img_size_torch)
 
     slice_ = [slice(start, end) for start, end in zip(crop_start, crop_end)]
 
@@ -232,5 +301,11 @@ def calc_center_of_mass(img: torch.Tensor, vmin=0, vmax=1) -> torch.Tensor:
 
     coords = coords[fg_mask]
     x3d_list = x3d_list[fg_mask]
+
+    if coords.numel() == 0:
+        # no foreground found; fall back to the geometric center
+        return torch.tensor(
+            [float(s) / 2.0 for s in spatial_shape], device=img.device
+        )
 
     return torch.mean(coords, dim=0)

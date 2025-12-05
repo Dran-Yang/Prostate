@@ -1,5 +1,4 @@
 import logging
-import re
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -7,6 +6,7 @@ from typing import Callable, Optional, Sequence
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from monai.transforms.compose import Compose
 from monai.transforms.intensity.dictionary import ScaleIntensityRangePercentilesd
 
@@ -58,7 +58,9 @@ class ProstateSSL(MedicalVisionDataset):
         random_slices: bool = False,
         append_label_mask: bool = False,
         spatial_size: Optional[Sequence[int] | int | float] = None,
+        percentage_labels: float = 1.0,
     ) -> None:
+        self.seg_name = "roi_Prostate"
         if mri_sequences is not None and isinstance(mri_sequences, str):
             self.mri_sequences = mri_sequences.split(",")
         else:
@@ -72,6 +74,10 @@ class ProstateSSL(MedicalVisionDataset):
         self.random_axes = random_axes
         self.random_slices = random_slices
         self.append_label_mask = append_label_mask
+        self.percentage_labels = float(max(min(percentage_labels, 1.0), 0.0))
+        self._mask_exists: list[bool] = []
+        self._mask_usage: list[bool] = []
+
         if spatial_size is not None:
             if isinstance(spatial_size, (int, float)):
                 self.spatial_size = (int(spatial_size), int(spatial_size))
@@ -106,12 +112,13 @@ class ProstateSSL(MedicalVisionDataset):
             super()._init_images()
 
         self._init_load_transform()
+        self._init_mask_usage()
 
     def _init_load_transform(self):
         self.img_load_transform = Compose(
             [
                 SubjectDirToProstateFPsDict(
-                    keys=[*self.mri_sequences, "seg"], seg_name="roi_Prostate"
+                    keys=[*self.mri_sequences, "seg"], seg_name=self.seg_name
                 ),
                 LoadTumorSliced(
                     keys=[*self.mri_sequences, "seg"],
@@ -123,6 +130,7 @@ class ProstateSSL(MedicalVisionDataset):
                     select_random_slices=self.random_slices
                     and self.split == self.Split.TRAIN,
                     min_tumor_size=1,
+                    allow_missing_seg=True,
                 ),
                 ScaleIntensityRangePercentilesd(
                     keys=self.mri_sequences,
@@ -135,8 +143,71 @@ class ProstateSSL(MedicalVisionDataset):
             ]
         )
 
+    def _init_mask_usage(self) -> None:
+        """
+        Track which subjects have segmentation masks and pre-select which ones will expose
+        the mask channel according to percentage_labels.
+        """
+        resolver = SubjectDirToProstateFPsDict(keys=["seg"], seg_name=self.seg_name)
+        self._mask_exists = []
+        for pid in self.images:
+            seg_fp = resolver(Path(self._split_dir) / pid)["seg"]
+            self._mask_exists.append(seg_fp.exists())
+
+        available_idx = [i for i, has_seg in enumerate(self._mask_exists) if has_seg]
+        if self.percentage_labels >= 1.0:
+            selected_idx = available_idx
+        elif self.percentage_labels <= 0.0 or len(available_idx) == 0:
+            selected_idx = []
+        else:
+            rng = np.random.default_rng()
+            target = max(int(round(len(available_idx) * self.percentage_labels)), 0)
+            target = min(target, len(available_idx))
+            selected_idx = (
+                rng.choice(available_idx, size=target, replace=False).tolist()
+                if target > 0
+                else []
+            )
+
+        self._mask_usage = [False for _ in self.images]
+        for idx in selected_idx:
+            self._mask_usage[idx] = True
+
+        logger.info(
+            "Segmentation availability: %d/%d present; using %d (~%.2f requested).",
+            sum(self._mask_exists),
+            len(self._mask_exists),
+            sum(self._mask_usage),
+            self.percentage_labels,
+        )
+
     def _check_size(self):
         logger.info(f"Found {len(self.images)} patients for split '{self.split}'.")
+
+    def _resize_to_spatial_size(
+        self, tensor: torch.Tensor, mode: str = "bilinear", is_mask: bool = False
+    ) -> torch.Tensor:
+        """
+        Ensure all modalities (and optional masks) share the same spatial size.
+        Bilinear for images, nearest for masks to keep them binary.
+        """
+        tensor = tensor.float()
+        if tensor.ndim != 2:
+            raise ValueError(f"Expected a 2D tensor, got shape {tensor.shape}.")
+
+        if tuple(tensor.shape[-2:]) != tuple(self.spatial_size):
+            align_corners = False if mode in ("bilinear", "bicubic") else None
+            tensor = F.interpolate(
+                tensor.unsqueeze(0).unsqueeze(0),
+                size=self.spatial_size,
+                mode=mode,
+                align_corners=align_corners,
+            ).squeeze(0).squeeze(0)
+
+        if is_mask:
+            tensor = (tensor > 0.5).float()
+
+        return tensor
 
     def get_num_classes(self) -> int:
         return 0
@@ -151,13 +222,24 @@ class ProstateSSL(MedicalVisionDataset):
         subject_dir = Path(self._split_dir) / self.images[index]
         subject_dict = self.img_load_transform(subject_dir)
 
-        image = torch.stack([subject_dict[key] for key in self.mri_sequences], dim=0)
-
-        if image.size(0) == 1:
-            image = image.repeat(3, 1, 1)
+        image_channels = [
+            self._resize_to_spatial_size(subject_dict[key], mode="bilinear")
+            for key in self.mri_sequences
+        ]
+        image = torch.stack(image_channels, dim=0)
 
         if self.append_label_mask:
-            image = torch.cat([image, subject_dict["seg"].unsqueeze(0)], dim=0)
+            seg_tensor = self._resize_to_spatial_size(
+                subject_dict["seg"], mode="nearest", is_mask=True
+            )
+            use_mask = (
+                index < len(self._mask_usage)
+                and self._mask_usage[index]
+                and self._mask_exists[index]
+            )
+            if not use_mask:
+                seg_tensor = torch.zeros_like(seg_tensor)
+            image = torch.cat([image, seg_tensor.unsqueeze(0)], dim=0)
 
         return image
 

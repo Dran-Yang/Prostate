@@ -82,7 +82,14 @@ def get_sha():
 
 
 class CosineScheduler(object):
-    """Creates a cosine learning rate schedule with optional warmup and freeze periods."""
+    """Cosine schedule with optional warmup and freeze periods, padded/truncated to total_iters."""
+
+    @staticmethod
+    def _to_int_iters(value, name):
+        ivalue = int(value)
+        if ivalue < 0:
+            raise ValueError(f"{name} must be non-negative, got {value}.")
+        return ivalue
 
     def __init__(
         self,
@@ -95,19 +102,44 @@ class CosineScheduler(object):
     ):
         super().__init__()
         self.final_value = final_value
-        self.total_iters = total_iters
+        self.total_iters = self._to_int_iters(total_iters, "total_iters")
+        self.warmup_iters = self._to_int_iters(warmup_iters, "warmup_iters")
+        self.freeze_iters = self._to_int_iters(freeze_iters, "freeze_iters")
 
-        freeze_schedule = np.zeros((freeze_iters))
+        cosine_iters = max(self.total_iters - self.warmup_iters - self.freeze_iters, 0)
 
-        warmup_schedule = np.linspace(start_warmup_value, base_value, warmup_iters)
+        freeze_schedule = np.zeros(self.freeze_iters, dtype=float)
 
-        iters = np.arange(total_iters - warmup_iters - freeze_iters)
-        schedule = final_value + 0.5 * (base_value - final_value) * (
-            1 + np.cos(np.pi * iters / len(iters))
+        warmup_schedule = (
+            np.linspace(start_warmup_value, base_value, self.warmup_iters)
+            if self.warmup_iters > 0
+            else np.array([], dtype=float)
         )
-        self.schedule = np.concatenate((freeze_schedule, warmup_schedule, schedule))
 
-        assert len(self.schedule) == self.total_iters
+        if cosine_iters > 0:
+            iters = np.arange(cosine_iters, dtype=float)
+            cosine_schedule = final_value + 0.5 * (base_value - final_value) * (
+                1 + np.cos(np.pi * iters / max(cosine_iters, 1))
+            )
+        else:
+            cosine_schedule = np.array([], dtype=float)
+
+        schedule = np.concatenate((freeze_schedule, warmup_schedule, cosine_schedule))
+
+        if len(schedule) < self.total_iters:
+            pad = np.full(self.total_iters - len(schedule), final_value, dtype=float)
+            schedule = np.concatenate((schedule, pad))
+        elif len(schedule) > self.total_iters:
+            schedule = schedule[: self.total_iters]
+
+        if len(schedule) != self.total_iters:
+            raise ValueError(
+                f"CosineScheduler length mismatch: expected {self.total_iters}, "
+                f"got {len(schedule)} (freeze={self.freeze_iters}, warmup={self.warmup_iters}, "
+                f"cosine={cosine_iters})."
+            )
+
+        self.schedule = schedule
 
     def __getitem__(self, it):
         if it >= self.total_iters:

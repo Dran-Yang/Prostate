@@ -50,6 +50,58 @@ torch.backends.cuda.matmul.allow_tf32 = (
 logger = logging.getLogger("dinov2")
 
 
+def _unwrap_module(mod):
+    """
+    Safely unwrap common wrappers (DDP/FSDP) for isinstance checks.
+    """
+    if hasattr(mod, "module"):
+        return mod.module
+    # FSDP exposes the wrapped module through _fsdp_wrapped_module
+    inner = getattr(mod, "_fsdp_wrapped_module", None)
+    return inner if inner is not None else mod
+
+
+def enforce_fp32_training(cfg):
+    """
+    Force a consistent float32 pipeline (no grad scaler, no fp16 mixed precision),
+    keeping the API surface unchanged. xFormers kernels stay enabled but will see
+    fp32 tensors end-to-end.
+    """
+    cfg.compute_precision.grad_scaler = False
+    for branch in ("student", "teacher"):
+        branch_cfg = getattr(cfg.compute_precision, branch, {})
+        if hasattr(branch_cfg, "items"):
+            iterable = branch_cfg.items()
+        else:
+            iterable = {}
+        for _, module_cfg in iterable:
+            if hasattr(module_cfg, "mixed_precision") or "mixed_precision" in module_cfg:
+                mp_cfg = module_cfg.mixed_precision
+                mp_cfg.param_dtype = "fp32"
+                mp_cfg.reduce_dtype = "fp32"
+                mp_cfg.buffer_dtype = "fp32"
+
+
+def ensure_dataset_path_flags(cfg):
+    """
+    Append runtime flags to the dataset string exactly once so both model
+    construction and dataloading see the same channel configuration.
+    """
+    dataset_name = cfg.train.dataset_path.split(":")[0]
+    if dataset_name not in {"GliomaSSL", "GliomaSupervised", "ProstateSSL"}:
+        return
+    if "append_label_mask" not in cfg.train.dataset_path:
+        cfg.train.dataset_path = (
+            cfg.train.dataset_path
+            + f":append_label_mask={cfg.crops.crop_from_tumor_foreground}"
+        )
+    if "percentage_labels" not in cfg.train.dataset_path:
+        cfg.train.dataset_path = (
+            cfg.train.dataset_path
+            + f":percentage_labels={cfg.train.percentage_labels}"
+        )
+
+
 def get_args_parser(add_help: bool = True):
     parser = argparse.ArgumentParser("DINOv2 training", add_help=add_help)
     parser.add_argument(
@@ -223,8 +275,10 @@ def do_test(cfg, model, iteration):
 
 def do_train(cfg, model, resume=False):
     model.train()
-    inputs_dtype = torch.half
-    fp16_scaler = model.fp16_scaler  # for mixed precision training
+    # Use full precision end-to-end for stability on 4090 + medical data
+    inputs_dtype = torch.float32
+    fp16_scaler = None
+    model.fp16_scaler = None  # disable any scaler created during construction
 
     # setup optimizer
 
@@ -298,17 +352,6 @@ def do_train(cfg, model, resume=False):
         dtype=inputs_dtype,
     )
 
-    # append whether to append segmentation map to train.dataset_path
-
-    cfg.train.dataset_path = (
-        cfg.train.dataset_path
-        + f":append_label_mask={cfg.crops.crop_from_tumor_foreground}"
-    )
-    # append percenage labels
-    cfg.train.dataset_path = (
-        cfg.train.dataset_path + f":percentage_labels={cfg.train.percentage_labels}"
-    )
-
     # setup data loader
     dataset = make_dataset(
         dataset_str=cfg.train.dataset_path,
@@ -330,12 +373,13 @@ def do_train(cfg, model, resume=False):
         collate_fn=collate_fn,
     )
 
-    if not isinstance(model.student.backbone.module, GliomaDinoViT):
+    backbone = _unwrap_module(model.student.backbone)
+    if not isinstance(backbone, GliomaDinoViT):
         assert len(dataset.mri_sequences) in [
             1,
             3,
         ], (
-            f"Only 1 or 3 MRI sequences are supported for regular {type(model.student.backbone.module)}."
+            f"Only 1 or 3 MRI sequences are supported for regular {type(backbone)}."
         )
 
     # training loop
@@ -510,6 +554,10 @@ def extract_best_checkpoint_iteration(eval_dir):
 
 def main(args):
     cfg = setup(args)
+
+    # dtype strategy: keep everything in float32 for stability on single-GPU runs
+    enforce_fp32_training(cfg)
+    ensure_dataset_path_flags(cfg)
 
     model = SSLMetaArch(cfg).to(torch.device("cuda"))
     model.prepare_for_distributed_training()

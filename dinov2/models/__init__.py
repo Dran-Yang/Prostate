@@ -39,13 +39,25 @@ def build_model(args, only_teacher=False, img_size=224, **kwargs):
 
 def build_model_from_cfg(cfg, only_teacher=False):
     kwargs = {}
-    if (
-        cfg.student.arch.startswith("glioma_vit")
-        and "mri_sequences" in cfg.train.dataset_path
-    ):
-        mri_sequences = (
-            cfg.train.dataset_path.split("mri_sequences=")[1].split(":")[0].split(",")
-        )
+    dataset_tokens = cfg.train.dataset_path.split(":")[1:]
+    dataset_kwargs = {}
+    for token in dataset_tokens:
+        if "=" in token:
+            key, value = token.split("=", 1)
+            dataset_kwargs[key] = value
+
+    append_mask_flag = dataset_kwargs.get("append_label_mask", "false").lower() == "true"
+    mri_sequences = None
+    if "mri_sequences" in dataset_kwargs:
+        mri_sequences = dataset_kwargs["mri_sequences"].split(",")
+        if append_mask_flag:
+            # append a pseudo modality name for the mask channel so GliomaDinoViT can embed it
+            mri_sequences = [*mri_sequences, "seg"]
+        kwargs["in_chans"] = len(mri_sequences)
+    elif append_mask_flag:
+        kwargs["in_chans"] = kwargs.get("in_chans", 3) + 1
+
+    if cfg.student.arch.startswith("glioma_vit") and mri_sequences is not None:
         kwargs["mri_sequences"] = mri_sequences
         kwargs["use_mri_seq_embed"] = cfg.student.use_mri_seq_embed
         kwargs["img_wise_pos_embed"] = cfg.student.img_wise_pos_embed
