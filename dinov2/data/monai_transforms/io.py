@@ -55,11 +55,22 @@ class SubjectDirToProstateFPsDict(MapTransform):
             return self._resolve_fp(subject_dir, "ax_dwi")
 
         def _score(path: Path) -> int:
-            m = re.search(r"(\d+)", path.stem)
+            """Extract b-value from DWI filename, prioritizing b=XXXX format."""
+            # Prioritize b=1000 or b1000 format
+            m = re.search(r'b[=_-]?(\d+)', path.stem, re.IGNORECASE)
+            if m:
+                return int(m.group(1))
+            # Fall back to any number in filename
+            m = re.search(r'(\d+)', path.stem)
             return int(m.group(1)) if m else -1
 
         candidates.sort(key=_score, reverse=True)
-        return candidates[0]
+        selected = candidates[0]
+        # Log selection for debugging
+        import logging
+        logger = logging.getLogger("dinov2")
+        logger.debug(f"Selected DWI file: {selected.name} (b-value: {_score(selected)})")
+        return selected
 
     def __call__(self, subject_dir: Path) -> dict[str, Path]:
         d: dict[str, Path] = {}
@@ -260,11 +271,17 @@ def calculate_crop_slices(
     spatial_crop_size: tuple[int, int],
     spatial_img_size: Sequence[int],
 ) -> list[slice]:
-    """Calculate crop slices for a given center of mass and crop size."""
+    """Calculate crop slices for a given center of mass and crop size.
+    
+    Handles edge cases where crop size exceeds image size or ROI is very small.
+    """
 
     com_int = com.int()
     spatial_crop_size_torch = torch.tensor(spatial_crop_size).to(com_int.device).long()
     spatial_img_size_torch = torch.tensor(spatial_img_size).to(com_int.device).long()
+
+    # Ensure crop size doesn't exceed image size
+    spatial_crop_size_torch = torch.min(spatial_crop_size_torch, spatial_img_size_torch)
 
     crop_start = torch.clamp(com_int - spatial_crop_size_torch // 2, 0)
     crop_end = crop_start + spatial_crop_size_torch

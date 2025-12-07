@@ -84,6 +84,12 @@ class ProstateSSL(MedicalVisionDataset):
             else:
                 self.spatial_size = tuple(int(x) for x in spatial_size)
 
+        # Convert string split to enum if needed
+        if isinstance(split, str):
+            split_enum = self.Split[split.upper()]
+        else:
+            split_enum = split
+
         super().__init__(split_enum, root, transforms, transform, target_transform)
 
         self.class_names: Sequence[str] = []

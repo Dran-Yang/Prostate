@@ -86,20 +86,59 @@ def ensure_dataset_path_flags(cfg):
     """
     Append runtime flags to the dataset string exactly once so both model
     construction and dataloading see the same channel configuration.
+    Removes any existing flags first to avoid conflicts.
     """
     dataset_name = cfg.train.dataset_path.split(":")[0]
     if dataset_name not in {"GliomaSSL", "GliomaSupervised", "ProstateSSL"}:
         return
-    if "append_label_mask" not in cfg.train.dataset_path:
-        cfg.train.dataset_path = (
-            cfg.train.dataset_path
-            + f":append_label_mask={cfg.crops.crop_from_tumor_foreground}"
-        )
-    if "percentage_labels" not in cfg.train.dataset_path:
-        cfg.train.dataset_path = (
-            cfg.train.dataset_path
-            + f":percentage_labels={cfg.train.percentage_labels}"
-        )
+    
+    # Remove existing flags if present to avoid conflicts
+    tokens = cfg.train.dataset_path.split(":")
+    filtered_tokens = [tokens[0]] + [
+        t for t in tokens[1:] 
+        if not (t.startswith("append_label_mask=") or t.startswith("percentage_labels="))
+    ]
+    cfg.train.dataset_path = ":".join(filtered_tokens)
+    
+    # Add runtime flags
+    cfg.train.dataset_path = (
+        cfg.train.dataset_path
+        + f":append_label_mask={cfg.crops.crop_from_tumor_foreground}"
+    )
+    cfg.train.dataset_path = (
+        cfg.train.dataset_path
+        + f":percentage_labels={cfg.train.percentage_labels}"
+    )
+
+
+def validate_dataset_path(cfg):
+    """Validate dataset_path format and required fields."""
+    required_fields = ["root", "split"]
+    dataset_path = cfg.train.dataset_path
+    
+    if not dataset_path:
+        raise ValueError("train.dataset_path cannot be empty")
+    
+    tokens = dataset_path.split(":")
+    dataset_name = tokens[0]
+    
+    if dataset_name not in {"GliomaSSL", "GliomaSupervised", "ProstateSSL"}:
+        logger.warning(f"Unknown dataset: {dataset_name}")
+        return
+    
+    kwargs = {}
+    for token in tokens[1:]:
+        if "=" in token:
+            key, value = token.split("=", 1)
+            kwargs[key] = value
+    
+    for field in required_fields:
+        if field not in kwargs:
+            raise ValueError(
+                f"Required field '{field}' missing in dataset_path: {dataset_path}"
+            )
+    
+    logger.info(f"Dataset path validation passed: {dataset_name} with {len(kwargs)} parameters")
 
 
 def get_args_parser(add_help: bool = True):
@@ -201,6 +240,17 @@ def apply_optim_scheduler(optimizer, lr, wd, last_layer_lr):
 
 
 def do_eval_all_sequences(cfg, model, iteration):
+    # Check dataset type and only evaluate for glioma datasets
+    dataset_name = cfg.train.dataset_path.split(":")[0]
+    
+    if dataset_name == "ProstateSSL":
+        logger.info("Skipping multi-sequence evaluation for ProstateSSL (not applicable).")
+        return
+    elif dataset_name not in ["GliomaSSL", "GliomaSupervised"]:
+        logger.info(f"Unknown dataset {dataset_name}, skipping multi-sequence eval.")
+        return
+    
+    # Glioma-specific evaluation
     mri_sequences = ["t1", "t1c", "t2", "flair"]
 
     mri_sequence_combinations = list(powerset(mri_sequences, min_size=2, max_size=4))
@@ -558,6 +608,7 @@ def main(args):
     # dtype strategy: keep everything in float32 for stability on single-GPU runs
     enforce_fp32_training(cfg)
     ensure_dataset_path_flags(cfg)
+    validate_dataset_path(cfg)
 
     model = SSLMetaArch(cfg).to(torch.device("cuda"))
     model.prepare_for_distributed_training()
