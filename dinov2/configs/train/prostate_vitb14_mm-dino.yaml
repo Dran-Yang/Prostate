@@ -6,7 +6,7 @@ train:
   saveckp_freq: 10
   img_size: 224
 student:
-  arch: glioma_vit_base
+  arch: medical_vit_base
   use_mri_seq_embed: True
   img_wise_pos_embed: True
   patch_size: 14

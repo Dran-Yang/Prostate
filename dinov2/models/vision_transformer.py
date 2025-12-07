@@ -339,9 +339,13 @@ class DinoVisionTransformer(nn.Module):
             return self.head(ret["x_norm_clstoken"])
 
 
-class GliomaDinoViT(DinoVisionTransformer):
-    # embedding to indicate the MRI sequence for each token (patch)
-    mri_sequences_default = ["t1", "t1c", "t2", "flair"]
+class MedicalDinoViT(DinoVisionTransformer):
+    """
+    Medical imaging variant of DINOv2 ViT with MRI sequence embeddings.
+    Supports multi-sequence inputs (e.g., T2WI, ADC, DWI for prostate MRI).
+    """
+    # Default MRI sequences (can be overridden via constructor)
+    mri_sequences_default = ["ax_t2wi", "ax_adc", "ax_dwi", "seg"]
 
     def __init__(
         self,
@@ -467,20 +471,28 @@ def init_weights_vit_timm(module: nn.Module, name: str = ""):
             nn.init.zeros_(module.bias)
 
 
-def glioma_vit_small(**kwargs):
-    return vit_small(vit_cls_=GliomaDinoViT, **kwargs)
+def medical_vit_small(**kwargs):
+    return vit_small(vit_cls_=MedicalDinoViT, **kwargs)
 
 
-def glioma_vit_base(**kwargs):
-    return vit_base(vit_cls_=GliomaDinoViT, **kwargs)
+def medical_vit_base(**kwargs):
+    return vit_base(vit_cls_=MedicalDinoViT, **kwargs)
 
 
-def glioma_vit_large(**kwargs):
-    return vit_large(vit_cls_=GliomaDinoViT, **kwargs)
+def medical_vit_large(**kwargs):
+    return vit_large(vit_cls_=MedicalDinoViT, **kwargs)
 
 
-def glioma_vit_giant2(**kwargs):
-    return vit_giant2(vit_cls_=GliomaDinoViT, **kwargs)
+def medical_vit_giant2(**kwargs):
+    return vit_giant2(vit_cls_=MedicalDinoViT, **kwargs)
+
+
+# Backward compatibility aliases
+glioma_vit_small = medical_vit_small
+glioma_vit_base = medical_vit_base
+glioma_vit_large = medical_vit_large
+glioma_vit_giant2 = medical_vit_giant2
+GliomaDinoViT = MedicalDinoViT
 
 
 def vit_small(patch_size=16, vis_cls_=DinoVisionTransformer, **kwargs):

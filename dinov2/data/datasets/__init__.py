@@ -5,8 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 
 
-from .glioma_ssl import GliomaSSL
-from .glioma_supervised import GliomaSupervised
 from .prostate_ssl import ProstateSSL
 
-__all__ = ["GliomaSSL", "GliomaSupervised", "ProstateSSL"]
+__all__ = ["ProstateSSL"]

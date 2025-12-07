@@ -11,10 +11,7 @@ from typing import Any, Callable, List, Optional, TypeVar
 import torch
 from torch.utils.data import Sampler
 
-from .datasets import (
-    GliomaSSL,
-    GliomaSupervised,
-)
+from .datasets import ProstateSSL
 from .samplers import EpochSampler, InfiniteSampler, ShardedInfiniteSampler
 
 logger = logging.getLogger("dinov2")
@@ -55,9 +52,6 @@ def _parse_dataset_str(dataset_str: str):
 
     for token in tokens[1:]:
         key, value = token.split("=")
-        # assert key in ("root", "extra", "split") or (
-        # key in ["random_axes", "mri_sequences",""] and "glioma" in name.lower()
-        # )
         # map boolean strings to actual booleans
         if value.lower() == "true":
             value = True
@@ -72,16 +66,10 @@ def _parse_dataset_str(dataset_str: str):
 
         kwargs[key] = value
 
-    if name == "GliomaSupervised":
-        class_ = GliomaSupervised
-    elif name == "GliomaSSL":
-        class_ = GliomaSSL
-    elif name == "ProstateSSL":
-        from dinov2.data.datasets import ProstateSSL
-
+    if name == "ProstateSSL":
         class_ = ProstateSSL
     else:
-        raise ValueError(f'Unsupported dataset "{name}"')
+        raise ValueError(f'Unsupported dataset "{name}". Only "ProstateSSL" is supported.')
 
     if "split" in kwargs:
         kwargs["split"] = class_.Split[kwargs["split"]]

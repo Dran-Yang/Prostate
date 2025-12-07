@@ -10,7 +10,6 @@ import logging
 import math
 import os
 from functools import partial
-from itertools import chain, combinations
 from pathlib import Path
 
 import torch
@@ -34,7 +33,7 @@ from dinov2.eval.metrics import MetricType
 from dinov2.eval.setup import get_autocast_dtype
 from dinov2.fsdp import FSDPCheckpointer
 from dinov2.logging import MetricLogger
-from dinov2.models.vision_transformer import GliomaDinoViT
+from dinov2.models.vision_transformer import MedicalDinoViT
 from dinov2.train.ssl_meta_arch import SSLMetaArch
 from dinov2.utils.config import setup
 from dinov2.utils.dtype import as_torch_dtype
@@ -89,7 +88,7 @@ def ensure_dataset_path_flags(cfg):
     Removes any existing flags first to avoid conflicts.
     """
     dataset_name = cfg.train.dataset_path.split(":")[0]
-    if dataset_name not in {"GliomaSSL", "GliomaSupervised", "ProstateSSL"}:
+    if dataset_name != "ProstateSSL":
         return
     
     # Remove existing flags if present to avoid conflicts
@@ -122,9 +121,8 @@ def validate_dataset_path(cfg):
     tokens = dataset_path.split(":")
     dataset_name = tokens[0]
     
-    if dataset_name not in {"GliomaSSL", "GliomaSupervised", "ProstateSSL"}:
-        logger.warning(f"Unknown dataset: {dataset_name}")
-        return
+    if dataset_name != "ProstateSSL":
+        raise ValueError(f"Unsupported dataset: {dataset_name}. Only 'ProstateSSL' is supported.")
     
     kwargs = {}
     for token in tokens[1:]:
@@ -240,43 +238,15 @@ def apply_optim_scheduler(optimizer, lr, wd, last_layer_lr):
 
 
 def do_eval_all_sequences(cfg, model, iteration):
-    # Check dataset type and only evaluate for glioma datasets
+    """Multi-sequence evaluation (placeholder for prostate-only setup)."""
     dataset_name = cfg.train.dataset_path.split(":")[0]
     
     if dataset_name == "ProstateSSL":
         logger.info("Skipping multi-sequence evaluation for ProstateSSL (not applicable).")
         return
-    elif dataset_name not in ["GliomaSSL", "GliomaSupervised"]:
-        logger.info(f"Unknown dataset {dataset_name}, skipping multi-sequence eval.")
-        return
     
-    # Glioma-specific evaluation
-    mri_sequences = ["t1", "t1c", "t2", "flair"]
-
-    mri_sequence_combinations = list(powerset(mri_sequences, min_size=2, max_size=4))
-
-    mri_sequence_combinations += ["random"]  # add random combination
-
-    for mri_sequence_combination in mri_sequence_combinations[::-1]:
-        mri_sequence_combination_str = "-".join(mri_sequence_combination)
-        mri_sequence_combination_str = f"_mri_sequences-{mri_sequence_combination_str}"
-
-        do_eval(
-            cfg,
-            model,
-            f"{iteration}{mri_sequence_combination_str}",
-            mri_sequence_combination,
-        )
-
-
-def powerset(iterable, min_size=0, max_size=None):
-    "powerset([1,2,3]) --> () (1,) (2,) (3,) (1,2) (1,3) (2,3) (1,2,3)"
-    s = list(iterable)
-    if max_size is None:
-        max_size = len(s)
-    return chain.from_iterable(
-        combinations(s, r) for r in range(min_size, max_size + 1)
-    )
+    logger.info(f"Unknown dataset {dataset_name}, skipping multi-sequence eval.")
+    return
 
 
 def do_eval(cfg, model, iteration, cur_mri_sequences=None):
@@ -424,7 +394,7 @@ def do_train(cfg, model, resume=False):
     )
 
     backbone = _unwrap_module(model.student.backbone)
-    if not isinstance(backbone, GliomaDinoViT):
+    if not isinstance(backbone, MedicalDinoViT):
         assert len(dataset.mri_sequences) in [
             1,
             3,

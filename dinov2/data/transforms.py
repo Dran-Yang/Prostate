@@ -185,14 +185,18 @@ def make_classification_train_transform(
     return transforms.Compose(transforms_list)
 
 
-def make_glioma_classification_train_transform(
+def make_medical_classification_train_transform(
     *, crop_size: int = 224, **train_transform_kwargs
 ):
-    glioma_train_transforms = []
+    """
+    Creates training transforms for medical image classification.
+    Includes intensity augmentations and affine transforms suitable for MRI data.
+    """
+    medical_train_transforms = []
     train_transform = make_classification_train_transform(
         crop_size=crop_size, **train_transform_kwargs
     )
-    glioma_train_transforms.append(train_transform)
+    medical_train_transforms.append(train_transform)
 
     intensity_augmentations = Compose(
         [
@@ -213,14 +217,18 @@ def make_glioma_classification_train_transform(
         mode="bilinear",
         **affine_kwargs,
     )
-    glioma_train_transform = Compose(
+    medical_train_transform = Compose(
         [
             intensity_augmentations,
             affine_augmentations,
         ]
-        + glioma_train_transforms
+        + medical_train_transforms
     )
-    return glioma_train_transform
+    return medical_train_transform
+
+
+# Backward compatibility alias
+make_glioma_classification_train_transform = make_medical_classification_train_transform
 
 
 # This matches (roughly) torchvision's preset for classification evaluation:

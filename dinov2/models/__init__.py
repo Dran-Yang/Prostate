@@ -51,13 +51,13 @@ def build_model_from_cfg(cfg, only_teacher=False):
     if "mri_sequences" in dataset_kwargs:
         mri_sequences = dataset_kwargs["mri_sequences"].split(",")
         if append_mask_flag:
-            # append a pseudo modality name for the mask channel so GliomaDinoViT can embed it
+            # append a pseudo modality name for the mask channel so MedicalDinoViT can embed it
             mri_sequences = [*mri_sequences, "seg"]
         kwargs["in_chans"] = len(mri_sequences)
     elif append_mask_flag:
         kwargs["in_chans"] = kwargs.get("in_chans", 3) + 1
 
-    if cfg.student.arch.startswith("glioma_vit") and mri_sequences is not None:
+    if cfg.student.arch.startswith(("medical_vit", "glioma_vit")) and mri_sequences is not None:
         kwargs["mri_sequences"] = mri_sequences
         kwargs["use_mri_seq_embed"] = cfg.student.use_mri_seq_embed
         kwargs["img_wise_pos_embed"] = cfg.student.img_wise_pos_embed
