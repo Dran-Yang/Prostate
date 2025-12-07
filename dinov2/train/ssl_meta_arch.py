@@ -30,7 +30,16 @@ try:
     XFORMERS_AVAILABLE = True
 except ImportError:
     XFORMERS_AVAILABLE = False
-assert XFORMERS_AVAILABLE, "xFormers is required for DINOv2 training"
+
+# Allow training without xFormers if explicitly disabled
+import os
+if not XFORMERS_AVAILABLE and os.environ.get("XFORMERS_DISABLED") != "1":
+    logger = logging.getLogger("dinov2")
+    logger.warning(
+        "xFormers is not available. Training will use standard PyTorch attention. "
+        "For better performance, install xFormers: pip install xformers. "
+        "To suppress this warning, set XFORMERS_DISABLED=1."
+    )
 
 
 logger = logging.getLogger("dinov2")
