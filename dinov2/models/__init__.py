@@ -53,7 +53,10 @@ def build_model_from_cfg(cfg, only_teacher=False):
         if append_mask_flag:
             # append a pseudo modality name for the mask channel so MedicalDinoViT can embed it
             mri_sequences = [*mri_sequences, "seg"]
-        kwargs["in_chans"] = len(mri_sequences)
+        # For non-medical architectures, set in_chans to the number of sequences
+        # For medical_vit/glioma_vit, in_chans will be overridden below
+        if not cfg.student.arch.startswith(("medical_vit", "glioma_vit")):
+            kwargs["in_chans"] = len(mri_sequences)
     elif append_mask_flag:
         kwargs["in_chans"] = kwargs.get("in_chans", 3) + 1
 
@@ -61,6 +64,9 @@ def build_model_from_cfg(cfg, only_teacher=False):
         kwargs["mri_sequences"] = mri_sequences
         kwargs["use_mri_seq_embed"] = cfg.student.use_mri_seq_embed
         kwargs["img_wise_pos_embed"] = cfg.student.img_wise_pos_embed
+        # MedicalDinoViT converts each MRI sequence to 3-channel RGB internally,
+        # so the PatchEmbed should always use in_chans=3
+        kwargs["in_chans"] = 3
 
     return build_model(
         cfg.student, only_teacher=only_teacher, img_size=cfg.train.img_size, **kwargs
