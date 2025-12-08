@@ -347,6 +347,8 @@ class MedicalDinoViT(DinoVisionTransformer):
     # Default MRI sequences (can be overridden via constructor)
     # All possible sequences for consistent embedding indices
     mri_sequences_default = ["ax_t2wi", "ax_adc", "ax_dwi", "seg"]
+    # Number of possible sequence types for embedding table
+    NUM_SEQUENCE_TYPES = 4
 
     def __init__(
         self,
@@ -360,10 +362,10 @@ class MedicalDinoViT(DinoVisionTransformer):
         self.img_wise_pos_embed = img_wise_pos_embed
         self.mri_seq_embed_max_norm = 1.0 if use_mri_seq_embed else 0.0
         self.mri_sequences = mri_sequences or self.mri_sequences_default
-        # Embedding size should match the number of possible sequence types, not actual sequences
+        # Embedding size should match the number of possible sequence types (4), not actual sequences
         # This ensures consistent embeddings across different sequence combinations
         self.mri_seq_embed = nn.Embedding(
-            len(self.mri_sequences_default),
+            self.NUM_SEQUENCE_TYPES,
             self.embed_dim,
         )
         self.register_buffer(
