@@ -10,6 +10,7 @@
 
 import logging
 
+import torch
 from torch import Tensor, nn
 
 logger = logging.getLogger("dinov2")
@@ -70,12 +71,21 @@ class MemEffAttention(Attention):
             assert attn_bias is None, "xFormers is required for nested tensors usage"
             return super().forward(x)
 
+        # Store original dtype to convert back after xFormers op
+        original_dtype = x.dtype
         B, N, C = x.shape
+        
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
 
+        # xFormers memory_efficient_attention requires fp16 for q, k, v
+        # Cast qkv once before unbinding to reduce memory operations
+        qkv = qkv.to(torch.float16)
         q, k, v = unbind(qkv, 2)
 
         x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
+        
+        # Convert back to original dtype
+        x = x.to(original_dtype)
         x = x.reshape([B, N, C])
 
         x = self.proj(x)
