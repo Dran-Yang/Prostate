@@ -61,6 +61,9 @@ def build_model_from_cfg(cfg, only_teacher=False):
         kwargs["mri_sequences"] = mri_sequences
         kwargs["use_mri_seq_embed"] = cfg.student.use_mri_seq_embed
         kwargs["img_wise_pos_embed"] = cfg.student.img_wise_pos_embed
+        # MedicalDinoViT converts each MRI sequence to 3-channel RGB internally,
+        # so the PatchEmbed should always use in_chans=3
+        kwargs["in_chans"] = 3
 
     return build_model(
         cfg.student, only_teacher=only_teacher, img_size=cfg.train.img_size, **kwargs
