@@ -10,6 +10,7 @@
 
 import logging
 
+import torch
 from torch import Tensor, nn
 
 logger = logging.getLogger("dinov2")
