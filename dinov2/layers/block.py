@@ -155,8 +155,8 @@ def add_residual(x, brange, residual, residual_scale_factor, scaling_vector=None
     else:
         # xFormers scaled_index_add requires fp16 for all tensors
         original_dtype = x.dtype
-        if scaling_vector.dtype != torch.float16 or scaling_vector.device != x.device:
-            scaling_vector = scaling_vector.to(device=x.device, dtype=torch.float16)
+        # .to() is a no-op if already correct device/dtype
+        scaling_vector = scaling_vector.to(device=x.device, dtype=torch.float16)
         # Cast all inputs to fp16 before calling xFormers op
         x_fp16 = x.to(torch.float16)
         residual_fp16 = residual.to(torch.float16)

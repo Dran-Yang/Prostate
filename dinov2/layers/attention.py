@@ -76,12 +76,10 @@ class MemEffAttention(Attention):
         
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
 
-        q, k, v = unbind(qkv, 2)
-        
         # xFormers memory_efficient_attention requires fp16 for q, k, v
-        q = q.to(torch.float16)
-        k = k.to(torch.float16)
-        v = v.to(torch.float16)
+        # Cast qkv once before unbinding to reduce memory operations
+        qkv = qkv.to(torch.float16)
+        q, k, v = unbind(qkv, 2)
 
         x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
         
