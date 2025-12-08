@@ -153,15 +153,22 @@ def add_residual(x, brange, residual, residual_scale_factor, scaling_vector=None
             x_flat, 0, brange, residual.to(dtype=x.dtype), alpha=residual_scale_factor
         )
     else:
-        if scaling_vector.dtype != x.dtype or scaling_vector.device != x.device:
-            scaling_vector = scaling_vector.to(device=x.device, dtype=x.dtype)
+        # xFormers scaled_index_add requires fp16 for all tensors
+        original_dtype = x.dtype
+        if scaling_vector.dtype != torch.float16 or scaling_vector.device != x.device:
+            scaling_vector = scaling_vector.to(device=x.device, dtype=torch.float16)
+        # Cast all inputs to fp16 before calling xFormers op
+        x_fp16 = x.to(torch.float16)
+        residual_fp16 = residual.to(torch.float16)
         x_plus_residual = scaled_index_add(
-            x,
+            x_fp16,
             brange,
-            residual.to(dtype=x.dtype),
+            residual_fp16,
             scaling=scaling_vector,
             alpha=residual_scale_factor,
         )
+        # Convert back to original dtype
+        x_plus_residual = x_plus_residual.to(original_dtype)
     return x_plus_residual
 
 
@@ -188,9 +195,15 @@ def get_attn_bias_and_cat(x_list, branges=None):
         attn_bias_cache[all_shapes] = attn_bias
 
     if branges is not None:
-        cat_tensors = index_select_cat([x.flatten(1) for x in x_list], branges).view(
+        # xFormers index_select_cat requires fp16 for all input tensors
+        original_dtype = x_list[0].dtype
+        # Cast all tensors to fp16 before calling xFormers op
+        x_list_fp16 = [x.to(torch.float16) for x in x_list]
+        cat_tensors = index_select_cat([x.flatten(1) for x in x_list_fp16], branges).view(
             1, -1, x_list[0].shape[-1]
         )
+        # Convert back to original dtype
+        cat_tensors = cat_tensors.to(original_dtype)
     else:
         tensors_bs1 = tuple(x.reshape([1, -1, *x.shape[2:]]) for x in x_list)
         cat_tensors = torch.cat(tensors_bs1, dim=1)

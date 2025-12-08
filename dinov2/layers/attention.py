@@ -70,12 +70,23 @@ class MemEffAttention(Attention):
             assert attn_bias is None, "xFormers is required for nested tensors usage"
             return super().forward(x)
 
+        # Store original dtype to convert back after xFormers op
+        original_dtype = x.dtype
         B, N, C = x.shape
+        
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
 
         q, k, v = unbind(qkv, 2)
+        
+        # xFormers memory_efficient_attention requires fp16 for q, k, v
+        q = q.to(torch.float16)
+        k = k.to(torch.float16)
+        v = v.to(torch.float16)
 
         x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
+        
+        # Convert back to original dtype
+        x = x.to(original_dtype)
         x = x.reshape([B, N, C])
 
         x = self.proj(x)
